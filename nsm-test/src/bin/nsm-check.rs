@@ -420,8 +420,7 @@ fn check_random(ctx: i32) {
 fn main() {
     println!("NSM test started.");
 
-    let ctx = nsm_init();
-    assert!(ctx >= 0, "[Error] NSM initialization returned {}.", ctx);
+    let ctx = nsm_init().expect("[Error] NSM initialization error.");
 
     let description = get_nsm_description(ctx);
     assert_eq!(
@@ -456,6 +455,6 @@ fn main() {
 
     check_random(ctx);
 
-    nsm_exit(ctx);
+    nsm_exit(ctx).unwrap();
     println!("NSM test finished.");
 }

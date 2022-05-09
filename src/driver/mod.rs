@@ -14,11 +14,10 @@
 
 use crate::api::{ErrorCode, Request, Response};
 use libc::ioctl;
-use log::{debug, error};
 use nix::errno::Errno;
 use nix::request_code_readwrite;
-use nix::sys::uio::IoVec;
 use nix::unistd::close;
+use std::io::{IoSlice, IoSliceMut};
 
 use std::fs::OpenOptions;
 use std::mem;
@@ -26,16 +25,15 @@ use std::os::unix::io::{IntoRawFd, RawFd};
 
 const DEV_FILE: &str = "/dev/nsm";
 const NSM_IOCTL_MAGIC: u8 = 0x0A;
-const NSM_REQUEST_MAX_SIZE: usize = 0x1000;
 const NSM_RESPONSE_MAX_SIZE: usize = 0x3000;
 
 /// NSM message structure to be used with `ioctl()`.
 #[repr(C)]
 struct NsmMessage<'a> {
     /// User-provided data for the request
-    pub request: IoVec<&'a [u8]>,
+    pub request: IoSlice<'a>,
     /// Response data provided by the NSM pipeline
-    pub response: IoVec<&'a mut [u8]>,
+    pub response: IoSliceMut<'a>,
 }
 
 /// Encode an NSM `Request` value into a vector.  
@@ -48,8 +46,8 @@ fn nsm_encode_request_to_cbor(request: Request) -> Vec<u8> {
 /// Decode an NSM `Response` value from a raw memory buffer.  
 /// *Argument 1 (input)*: The `iovec` holding the memory buffer.  
 /// *Returns*: The decoded NSM response.
-fn nsm_decode_response_from_cbor(response_data: &IoVec<&mut [u8]>) -> Response {
-    match serde_cbor::from_slice(response_data.as_slice()) {
+fn nsm_decode_response_from_cbor(response_data: &[u8]) -> Response {
+    match serde_cbor::from_slice(&response_data) {
         Ok(response) => response,
         Err(_) => Response::Error(ErrorCode::InternalError),
     }
@@ -87,15 +85,10 @@ fn nsm_ioctl(fd: i32, message: &mut NsmMessage) -> Option<Errno> {
 pub fn nsm_process_request(fd: i32, request: Request) -> Response {
     let cbor_request = nsm_encode_request_to_cbor(request);
 
-    // Check if the request is too large
-    if cbor_request.len() > NSM_REQUEST_MAX_SIZE {
-        return Response::Error(ErrorCode::InputTooLarge);
-    }
-
     let mut cbor_response: [u8; NSM_RESPONSE_MAX_SIZE] = [0; NSM_RESPONSE_MAX_SIZE];
     let mut message = NsmMessage {
-        request: IoVec::from_slice(&cbor_request),
-        response: IoVec::from_mut_slice(&mut cbor_response),
+        request: IoSlice::new(&cbor_request),
+        response: IoSliceMut::new(&mut cbor_response),
     };
     let status = nsm_ioctl(fd, &mut message);
 
@@ -110,29 +103,20 @@ pub fn nsm_process_request(fd: i32, request: Request) -> Response {
 
 /// NSM library initialization function.  
 /// *Returns*: A descriptor for the opened device file.
-pub fn nsm_init() -> i32 {
-    let mut open_options = OpenOptions::new();
-    let open_dev = open_options.read(true).write(true).open(DEV_FILE);
-
-    match open_dev {
-        Ok(open_dev) => {
-            debug!("Device file '{}' opened successfully.", DEV_FILE);
-            open_dev.into_raw_fd() as i32
-        }
-        Err(e) => {
-            error!("Device file '{}' failed to open: {}", DEV_FILE, e);
-            -1
-        }
-    }
+pub fn nsm_init() -> std::io::Result<RawFd> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(DEV_FILE)
+        .map(|file| file.into_raw_fd())
 }
 
 /// NSM library exit function.  
 /// *Argument 1 (input)*: The descriptor for the opened device file, as
 /// obtained from `nsm_init()`.
-pub fn nsm_exit(fd: i32) {
-    let result = close(fd as RawFd);
-    match result {
-        Ok(()) => debug!("File of descriptor {} closed successfully.", fd),
-        Err(e) => error!("File of descriptor {} failed to close: {}", fd, e),
+pub fn nsm_exit(fd: RawFd) -> std::io::Result<()> {
+    match close(fd as RawFd) {
+        Err(err) => Err(err.into()),
+        _ => Ok(()),
     }
 }

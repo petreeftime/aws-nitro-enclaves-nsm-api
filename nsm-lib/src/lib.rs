@@ -32,15 +32,21 @@ pub struct NsmDescription {
 /// *Returns*: A descriptor for the opened device file.
 #[no_mangle]
 pub extern "C" fn nsm_lib_init() -> i32 {
-    nsm_init()
+    match nsm_init() {
+        Ok(fd) => fd,
+        Err(_) => -1,
+    }
 }
 
 /// NSM library exit function.  
 /// *Argument 1 (input)*: The descriptor for the opened device file, as
 /// obtained from `nsm_init()`.
 #[no_mangle]
-pub extern "C" fn nsm_lib_exit(fd: i32) {
-    nsm_exit(fd)
+pub extern "C" fn nsm_lib_exit(fd: i32) -> i32 {
+    match nsm_exit(fd) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
 }
 
 /// NSM `ExtendPCR` operation for non-Rust callers.  

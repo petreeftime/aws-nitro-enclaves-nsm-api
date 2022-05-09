@@ -143,8 +143,7 @@ fn main() {
     signal_hook::flag::register(signal_hook::SIGTERM, Arc::clone(&term))
         .expect("Failed to register signal hook");
 
-    let ctx = nsm_init();
-    assert!(ctx >= 0, "[Error] NSM initialization returned {}.", ctx);
+    let ctx = nsm_init().expect("[Error] NSM initialization error");
 
     // 90 threads is the limit for ~200M of memory
     let index = 90;
@@ -186,7 +185,7 @@ fn main() {
     } //while
 
     pool.join();
-    nsm_exit(ctx);
+    nsm_exit(ctx).unwrap();
 
     println!(
         "NSM test finished. Exitcode: {}",
