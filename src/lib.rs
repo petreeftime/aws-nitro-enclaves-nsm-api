@@ -11,3 +11,27 @@
 
 pub mod api;
 pub mod driver;
+
+use std::os::unix::io::RawFd;
+
+use driver::{nsm_exit, nsm_init};
+
+pub struct NitroSecureModule {
+    fd: RawFd
+}
+
+impl NitroSecureModule {
+    pub fn new() -> std::io::Result<Self> {
+        let fd = nsm_init()?;
+        Ok(Self {
+            fd
+        })
+    }
+}
+
+impl Drop for NitroSecureModule {
+    fn drop(&mut self) {
+        // Purposefully ignore errors since only other option is log or panic.
+        nsm_exit(self.fd).unwrap_or_default()
+    }
+}
