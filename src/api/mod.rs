@@ -66,12 +66,6 @@ pub enum ErrorCode {
     /// Given request cannot be fulfilled due to missing capabilities
     InvalidOperation,
 
-    /// Operation succeeded but provided output buffer is too small
-    BufferTooSmall,
-
-    /// The user-provided input is too large
-    InputTooLarge,
-
     /// NitroSecureModule cannot fulfill request due to internal errors
     InternalError,
 }

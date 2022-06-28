@@ -14,11 +14,31 @@ pub mod driver;
 
 use std::os::unix::io::RawFd;
 
-use driver::{nsm_exit, nsm_init};
+use api::Request;
+use driver::{nsm_exit, nsm_init, nsm_process_request};
 
 pub struct NitroSecureModule {
     fd: RawFd
 }
+
+#[derive(Debug)]
+pub enum Error {
+    Io(std::io::Error),
+    Cbor(serde_cbor::Error),
+    NitroSecureModuleError(api::ErrorCode),
+    InvalidReponse,
+}
+
+impl From<driver::Error> for Error {
+    fn from(err: driver::Error) -> Self {
+       match err {
+          driver::Error::Io(io_err) => Error::Io(io_err),
+          driver::Error::Cbor(cbor_err) => Error::Cbor(cbor_err)
+       } 
+    }
+}
+
+pub type Result<T> = std::result::Result<T, Error>;
 
 impl NitroSecureModule {
     pub fn new() -> std::io::Result<Self> {
@@ -26,6 +46,16 @@ impl NitroSecureModule {
         Ok(Self {
             fd
         })
+    }
+
+    pub fn get_random(&self) -> Result<Vec<u8>> {
+        let request = Request::GetRandom;
+        let response = nsm_process_request(self.fd, request)?;
+        match response {
+            api::Response::GetRandom { random } => Ok(random),
+            api::Response::Error(err_code) =>  Err(Error::NitroSecureModuleError(err_code)),
+            _ => Err(Error::InvalidReponse)
+        }
     }
 }
 

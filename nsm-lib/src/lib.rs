@@ -8,8 +8,8 @@
 //! This module implements wrappers over the NSM Rust API which enable
 //! access to the API for non-Rust callers (ex.: C/C++ etc.).
 
-pub use aws_nitro_enclaves_nsm_api::api::{Digest, ErrorCode};
-use aws_nitro_enclaves_nsm_api::api::{Request, Response};
+pub use aws_nitro_enclaves_nsm_api::api::{Digest, ErrorCode as ApiErrorCode};
+use aws_nitro_enclaves_nsm_api::api::{Request, Response, Error};
 use aws_nitro_enclaves_nsm_api::driver::{nsm_exit, nsm_init, nsm_process_request};
 use serde_bytes::ByteBuf;
 use std::ptr::copy_nonoverlapping;
@@ -28,13 +28,55 @@ pub struct NsmDescription {
     pub digest: Digest,
 }
 
+#[repr(i32)]
+pub enum ErrorCode {
+    Success = 0,
+    OsError = -1,
+    EncodingError = -2,
+    InvalidArgument = -3,
+    InvalidResponse = -4,
+    InvalidIndex = -5,
+    ReadOnlyIndex = -6,
+    InternalError = -8,
+    BufferTooSmall = -9,
+}
+
+impl From<ErrorCode> for i32 {
+    fn from(err_code: ErrorCode) -> Self {
+        err_code as i32
+    }
+}
+
+impl From<aws_nitro_enclaves_nsm_api::api::Error> for ErrorCode {
+    fn from(err: aws_nitro_enclaves_nsm_api::api::Error) -> Self {
+        match err {
+           Error::Io(_) => ErrorCode::OsError,
+           Error::Cbor(_) => ErrorCode::EncodingError,
+        }
+    }
+}
+
+impl From<ApiErrorCode> for ErrorCode {
+    fn from(api_err_code: ApiErrorCode) -> Self {
+       match api_err_code {
+          ApiErrorCode::Success =>  ErrorCode::Success,
+          ApiErrorCode::InvalidResponse => ErrorCode::InvalidResponse,
+          ApiErrorCode::InvalidIndex => ErrorCode::InvalidIndex,
+          ApiErrorCode::ReadOnlyIndex => ErrorCode::ReadOnlyIndex,
+          ApiErrorCode::InvalidArgument => ErrorCode::InvalidArgument,
+          ApiErrorCode::InternalError=> ErrorCode::InternalError,
+       } 
+    }
+}
+
+
 /// NSM library initialization function.  
 /// *Returns*: A descriptor for the opened device file.
 #[no_mangle]
 pub extern "C" fn nsm_lib_init() -> i32 {
     match nsm_init() {
         Ok(fd) => fd,
-        Err(_) => -1,
+        Err(_) => ErrorCode::OsError as i32
     }
 }
 
@@ -42,10 +84,10 @@ pub extern "C" fn nsm_lib_init() -> i32 {
 /// *Argument 1 (input)*: The descriptor for the opened device file, as
 /// obtained from `nsm_init()`.
 #[no_mangle]
-pub extern "C" fn nsm_lib_exit(fd: i32) -> i32 {
+pub extern "C" fn nsm_lib_exit(fd: i32) -> ErrorCode {
     match nsm_exit(fd) {
-        Ok(()) => 0,
-        Err(_) => -1,
+        Ok(()) => ErrorCode::Success,
+        Err(err) => ErrorCode::OsError,
     }
 }
 
@@ -79,9 +121,10 @@ pub unsafe extern "C" fn nsm_extend_pcr(
     };
 
     match nsm_process_request(fd, request) {
-        Response::ExtendPCR { data: pcr } => nsm_get_raw_from_vec(&pcr, pcr_data, pcr_data_len),
-        Response::Error(err) => err,
-        _ => ErrorCode::InvalidResponse,
+        Ok(Response::ExtendPCR { data: pcr }) => { nsm_get_raw_from_vec(&pcr, pcr_data, pcr_data_len); ErrorCode::Success }
+        Ok(Response::Error(err)) => ErrorCode::from(err),
+        Ok(_) => ErrorCode::InvalidResponse,
+        Err(err) => ErrorCode::from(err),
     }
 }
 

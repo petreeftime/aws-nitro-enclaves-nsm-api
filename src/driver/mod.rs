@@ -12,9 +12,8 @@
 //! the user, which then gets populated with information from the NSM driver and
 //! then decoded from CBOR.
 
-use crate::api::{ErrorCode, Request, Response};
+use crate::api::{Request, Response};
 use libc::ioctl;
-use nix::errno::Errno;
 use nix::request_code_readwrite;
 use nix::unistd::close;
 use std::io::{IoSlice, IoSliceMut};
@@ -46,18 +45,15 @@ fn nsm_encode_request_to_cbor(request: Request) -> Vec<u8> {
 /// Decode an NSM `Response` value from a raw memory buffer.  
 /// *Argument 1 (input)*: The `iovec` holding the memory buffer.  
 /// *Returns*: The decoded NSM response.
-fn nsm_decode_response_from_cbor(response_data: &[u8]) -> Response {
-    match serde_cbor::from_slice(&response_data) {
-        Ok(response) => response,
-        Err(_) => Response::Error(ErrorCode::InternalError),
-    }
+fn nsm_decode_response_from_cbor(response_data: &[u8]) -> Result<Response, serde_cbor::Error> {
+    serde_cbor::from_slice(response_data)
 }
 
 /// Do an `ioctl()` of a given type for a given message.  
 /// *Argument 1 (input)*: The descriptor to the device file.  
 /// *Argument 2 (input/output)*: The message to be sent and updated via `ioctl()`.  
 /// *Returns*: The status of the operation.
-fn nsm_ioctl(fd: i32, message: &mut NsmMessage) -> Option<Errno> {
+fn nsm_ioctl(fd: i32, message: &mut NsmMessage) -> Result<(), std::io::Error> {
     let status = unsafe {
         ioctl(
             fd,
@@ -65,16 +61,33 @@ fn nsm_ioctl(fd: i32, message: &mut NsmMessage) -> Option<Errno> {
             message,
         )
     };
-    let errno = Errno::last();
 
     match status {
         // If ioctl() succeeded, the status is the message's response code
-        0 => None,
+        0 => Ok(()),
 
         // If ioctl() failed, the error is given by errno
-        _ => Some(errno),
+        _ => Err(std::io::Error::last_os_error()),
     }
 }
+
+pub enum Error {
+    Io(std::io::Error),
+    Cbor(serde_cbor::Error)
+}
+
+impl From<std::io::Error> for Error {
+    fn from(err: std::io::Error) -> Self {
+       Error::Io(err) 
+    }
+}
+
+impl From<serde_cbor::Error> for Error {
+    fn from(err: serde_cbor::Error) -> Self {
+       Error::Cbor(err) 
+    }
+}
+
 
 /// Create a message with input data and output capacity from a given
 /// request, then send it to the NSM driver via `ioctl()` and wait
@@ -82,7 +95,7 @@ fn nsm_ioctl(fd: i32, message: &mut NsmMessage) -> Option<Errno> {
 /// *Argument 1 (input)*: The descriptor to the NSM device file.  
 /// *Argument 2 (input)*: The NSM request.  
 /// *Returns*: The corresponding NSM response from the driver.
-pub fn nsm_process_request(fd: i32, request: Request) -> Response {
+pub fn nsm_process_request(fd: i32, request: Request) -> Result<Response, Error> {
     let cbor_request = nsm_encode_request_to_cbor(request);
 
     let mut cbor_response: [u8; NSM_RESPONSE_MAX_SIZE] = [0; NSM_RESPONSE_MAX_SIZE];
@@ -90,15 +103,9 @@ pub fn nsm_process_request(fd: i32, request: Request) -> Response {
         request: IoSlice::new(&cbor_request),
         response: IoSliceMut::new(&mut cbor_response),
     };
-    let status = nsm_ioctl(fd, &mut message);
+    let _ = nsm_ioctl(fd, &mut message)?;
 
-    match status {
-        None => nsm_decode_response_from_cbor(&message.response),
-        Some(errno) => match errno {
-            Errno::EMSGSIZE => Response::Error(ErrorCode::InputTooLarge),
-            _ => Response::Error(ErrorCode::InternalError),
-        },
-    }
+    Ok(nsm_decode_response_from_cbor(&message.response)?)
 }
 
 /// NSM library initialization function.  
