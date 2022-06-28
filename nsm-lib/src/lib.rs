@@ -12,8 +12,39 @@ pub use aws_nitro_enclaves_nsm_api::api::{Digest, ErrorCode as ApiErrorCode};
 use aws_nitro_enclaves_nsm_api::api::{Request, Response, Error};
 use aws_nitro_enclaves_nsm_api::driver::{nsm_exit, nsm_init, nsm_process_request};
 use serde_bytes::ByteBuf;
+use std::io::ErrorKind;
 use std::ptr::copy_nonoverlapping;
 use std::{cmp, slice};
+
+/// List of error codes that the NSM module can return as part of a Response
+#[repr(i32)]
+pub enum ErrorCode {
+    /// No errors
+    Success = 0,
+    ///Input argument(s) invalid
+    InvalidArgument = 1,
+    /// PlatformConfigurationRegister index out of bounds
+    InvalidIndex = 2,
+    /// The received response does not correspond to the earlier request
+    InvalidResponse = 3,
+    /// PlatformConfigurationRegister is in read-only mode and the operation
+    /// attempted to modify it
+    ReadOnlyIndex = 4,
+    /// Given request cannot be fulfilled due to missing capabilities
+    InvalidOperation = 5,
+    /// Operation succeeded but provided output buffer is too small
+    BufferTooSmall = 6,
+    /// The user-provided input is too large
+    InputTooLarge = 7,
+    /// NitroSecureModule cannot fulfill request due to internal errors
+    InternalError = 8,
+    /// CBOR reply received could not be correctly deserialized
+    EncodingError = 9,
+    /// OS Error, errno is set
+    System,
+    /// ErrorCode is not recognized
+    Unknown = i32::MIN
+}
 
 #[repr(C)]
 pub struct NsmDescription {
@@ -28,19 +59,6 @@ pub struct NsmDescription {
     pub digest: Digest,
 }
 
-#[repr(i32)]
-pub enum ErrorCode {
-    Success = 0,
-    OsError = -1,
-    EncodingError = -2,
-    InvalidArgument = -3,
-    InvalidResponse = -4,
-    InvalidIndex = -5,
-    ReadOnlyIndex = -6,
-    InternalError = -8,
-    BufferTooSmall = -9,
-}
-
 impl From<ErrorCode> for i32 {
     fn from(err_code: ErrorCode) -> Self {
         err_code as i32
@@ -50,7 +68,8 @@ impl From<ErrorCode> for i32 {
 impl From<aws_nitro_enclaves_nsm_api::api::Error> for ErrorCode {
     fn from(err: aws_nitro_enclaves_nsm_api::api::Error) -> Self {
         match err {
-           Error::Io(_) => ErrorCode::OsError,
+           Error::Io(err) if err.kind() == ErrorKind:: => ErrorCode::System,
+           Error::Io(_) => ErrorCode::System,
            Error::Cbor(_) => ErrorCode::EncodingError,
         }
     }
