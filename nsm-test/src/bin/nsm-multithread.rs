@@ -42,7 +42,7 @@ fn extend_pcr(ctx: i32, j: usize) {
                 index: pcr,
                 data: data_copy,
             },
-        );
+        ).expect("[Error] Request::ExtendPCR error while processing request");
     }
 }
 
@@ -65,7 +65,7 @@ fn check_single_attestation(
             nonce,
             public_key,
         },
-    );
+    ).expect("[Error] Request::Attestation error while processing request");
     match response {
         Response::Attestation { document } => {
             if document.is_empty() {

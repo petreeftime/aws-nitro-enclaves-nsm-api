@@ -18,7 +18,7 @@ use api::Request;
 use driver::{nsm_exit, nsm_init, nsm_process_request};
 
 pub struct NitroSecureModule {
-    fd: RawFd
+    fd: RawFd,
 }
 
 #[derive(Debug)]
@@ -31,21 +31,19 @@ pub enum Error {
 
 impl From<driver::Error> for Error {
     fn from(err: driver::Error) -> Self {
-       match err {
-          driver::Error::Io(io_err) => Error::Io(io_err),
-          driver::Error::Cbor(cbor_err) => Error::Cbor(cbor_err)
-       } 
+        match err {
+            driver::Error::Io(io_err) => Error::Io(io_err),
+            driver::Error::Cbor(cbor_err) => Error::Cbor(cbor_err),
+        }
     }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl NitroSecureModule {
-    pub fn new() -> std::io::Result<Self> {
+    pub fn new() -> Result<Self> {
         let fd = nsm_init()?;
-        Ok(Self {
-            fd
-        })
+        Ok(Self { fd })
     }
 
     pub fn get_random(&self) -> Result<Vec<u8>> {
@@ -53,8 +51,8 @@ impl NitroSecureModule {
         let response = nsm_process_request(self.fd, request)?;
         match response {
             api::Response::GetRandom { random } => Ok(random),
-            api::Response::Error(err_code) =>  Err(Error::NitroSecureModuleError(err_code)),
-            _ => Err(Error::InvalidReponse)
+            api::Response::Error(err_code) => Err(Error::NitroSecureModuleError(err_code)),
+            _ => Err(Error::InvalidReponse),
         }
     }
 }

@@ -35,7 +35,8 @@ struct NsmDescription {
 /// *Argument 1 (input)*: Context from `nsm_init()`.  
 /// *Returns*: A description structure.
 fn get_nsm_description(ctx: i32) -> NsmDescription {
-    let response = nsm_process_request(ctx, Request::DescribeNSM);
+    let response = nsm_process_request(ctx, Request::DescribeNSM)
+        .expect("[Error] Request::DescribeNSM Error during call");
     match response {
         Response::DescribeNSM {
             version_major,
@@ -81,7 +82,8 @@ fn check_initial_pcrs(ctx: i32, description: &NsmDescription) {
     // First, get the description of all available PCRs.
     let pcr_data: Vec<PcrData> = (0..description.max_pcrs)
         .map(|pcr| {
-            let response = nsm_process_request(ctx, Request::DescribePCR { index: pcr as u16 });
+            let response = nsm_process_request(ctx, Request::DescribePCR { index: pcr as u16 })
+                .expect("[Error] Request::DescribePCR failure");
             match response {
                 Response::DescribePCR { lock, data } => {
                     assert_eq!(
@@ -170,13 +172,12 @@ fn check_pcr_locks(ctx: i32, description: &NsmDescription) {
     let expected_pcr_len = get_pcr_len(description);
     let zeroed_pcr: Vec<u8> = vec![0; expected_pcr_len];
     let mut range = description.max_pcrs;
-    let mut response: Response;
 
     // Test that PCRs [0..16) cannot be locked.
     for index in 0..16 {
-        response = nsm_process_request(ctx, Request::LockPCR { index });
+        let response = nsm_process_request(ctx, Request::LockPCR { index });
         match response {
-            Response::Error(_) => (),
+            Ok(Response::Error(_)) => (),
             _ => panic!(
                 "[Error] PCR {} expected to not be lockable, but got: {:?}",
                 index, response
@@ -190,13 +191,14 @@ fn check_pcr_locks(ctx: i32, description: &NsmDescription) {
     for loop_idx in 0..10 {
         for index in 16..description.max_pcrs {
             let data_copy = dummy_data.clone();
-            response = nsm_process_request(
+            let response = nsm_process_request(
                 ctx,
                 Request::ExtendPCR {
                     index,
                     data: data_copy,
                 },
-            );
+            )
+            .expect("[Error] Request::ExtendPCR error while processing request");
 
             match response {
                 Response::ExtendPCR { data } => {
@@ -222,7 +224,7 @@ fn check_pcr_locks(ctx: i32, description: &NsmDescription) {
 
     // Lock all remaining PCRs.
     for index in 16..description.max_pcrs {
-        response = nsm_process_request(ctx, Request::LockPCR { index });
+        let response = nsm_process_request(ctx, Request::LockPCR { index }).expect("[Error] Request::LockPCR error while processing request");
 
         match response {
             Response::LockPCR => (),
@@ -239,7 +241,7 @@ fn check_pcr_locks(ctx: i32, description: &NsmDescription) {
     );
 
     // Lock PCRs in a valid range.
-    response = nsm_process_request(ctx, Request::LockPCRs { range });
+    let response = nsm_process_request(ctx, Request::LockPCRs { range }).expect("[Error] Request::LockPCRs error while processing request");
     match response {
         Response::LockPCRs => (),
         _ => panic!(
@@ -250,7 +252,7 @@ fn check_pcr_locks(ctx: i32, description: &NsmDescription) {
 
     // Lock PCRs in an invalid range.
     range += 1;
-    response = nsm_process_request(ctx, Request::LockPCRs { range });
+    let response = nsm_process_request(ctx, Request::LockPCRs { range }).expect("[Error] Request::LockPCRs error while processing request");
     match response {
         Response::Error(_) => (),
         _ => panic!(
@@ -268,13 +270,14 @@ fn check_pcr_locks(ctx: i32, description: &NsmDescription) {
     // Attempt to extend locked PCRs.
     for index in 0..description.max_pcrs {
         let data_copy = dummy_data.clone();
-        response = nsm_process_request(
+        let response = nsm_process_request(
             ctx,
             Request::ExtendPCR {
                 index,
                 data: data_copy,
             },
-        );
+        )
+        .unwrap();
 
         match response {
             Response::Error(_) => (),
@@ -293,7 +296,7 @@ fn check_pcr_locks(ctx: i32, description: &NsmDescription) {
     // Describe all PCRs multiple times.
     for loop_idx in 0..10 {
         for index in 0..description.max_pcrs {
-            response = nsm_process_request(ctx, Request::DescribePCR { index });
+            let response = nsm_process_request(ctx, Request::DescribePCR { index }).unwrap();
 
             match response {
                 Response::DescribePCR { lock, data } => {
@@ -348,7 +351,8 @@ fn check_single_attestation(
             nonce,
             public_key,
         },
-    );
+    )
+    .unwrap();
     match response {
         Response::Attestation { document } => {
             assert_ne!(document.len(), 0, "[Error] Attestation document is empty.");
@@ -402,7 +406,7 @@ fn check_random(ctx: i32) {
     let mut prev_random: Vec<u8> = vec![];
 
     for _ in 0..16 {
-        match nsm_process_request(ctx, Request::GetRandom) {
+        match nsm_process_request(ctx, Request::GetRandom).unwrap() {
             Response::GetRandom { random } => {
                 assert!(!random.is_empty());
                 assert!(prev_random != random);
