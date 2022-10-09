@@ -9,10 +9,9 @@
 //! access to the API for non-Rust callers (ex.: C/C++ etc.).
 
 pub use aws_nitro_enclaves_nsm_api::api::{Digest, ErrorCode as ApiErrorCode};
-use aws_nitro_enclaves_nsm_api::api::{Request, Response, Error};
+use aws_nitro_enclaves_nsm_api::api::{Error, Request, Response};
 use aws_nitro_enclaves_nsm_api::driver::{nsm_exit, nsm_init, nsm_process_request};
 use serde_bytes::ByteBuf;
-use std::io::ErrorKind;
 use std::ptr::copy_nonoverlapping;
 use std::{cmp, slice};
 
@@ -21,29 +20,29 @@ use std::{cmp, slice};
 pub enum ErrorCode {
     /// No errors
     Success = 0,
+    /// OS Error, errno is set
+    System = -1,
     ///Input argument(s) invalid
-    InvalidArgument = 1,
+    InvalidArgument = -2,
     /// PlatformConfigurationRegister index out of bounds
-    InvalidIndex = 2,
+    InvalidIndex = -3,
     /// The received response does not correspond to the earlier request
-    InvalidResponse = 3,
+    InvalidResponse = -4,
     /// PlatformConfigurationRegister is in read-only mode and the operation
     /// attempted to modify it
-    ReadOnlyIndex = 4,
+    ReadOnlyIndex = -5,
     /// Given request cannot be fulfilled due to missing capabilities
-    InvalidOperation = 5,
+    InvalidOperation = -6,
     /// Operation succeeded but provided output buffer is too small
-    BufferTooSmall = 6,
+    BufferTooSmall = -7,
     /// The user-provided input is too large
-    InputTooLarge = 7,
+    InputTooLarge = -8,
     /// NitroSecureModule cannot fulfill request due to internal errors
-    InternalError = 8,
+    InternalError = -9,
     /// CBOR reply received could not be correctly deserialized
-    EncodingError = 9,
-    /// OS Error, errno is set
-    System,
+    EncodingError = -10,
     /// ErrorCode is not recognized
-    Unknown = i32::MIN
+    Unknown = i32::MIN,
 }
 
 #[repr(C)]
@@ -68,26 +67,41 @@ impl From<ErrorCode> for i32 {
 impl From<aws_nitro_enclaves_nsm_api::api::Error> for ErrorCode {
     fn from(err: aws_nitro_enclaves_nsm_api::api::Error) -> Self {
         match err {
-           Error::Io(err) if err.kind() == ErrorKind:: => ErrorCode::System,
-           Error::Io(_) => ErrorCode::System,
-           Error::Cbor(_) => ErrorCode::EncodingError,
+            Error::Io(err) if err.raw_os_error() == Some(libc::EMSGSIZE) => {
+                ErrorCode::InputTooLarge
+            }
+            Error::Io(_) => ErrorCode::System,
+            Error::Cbor(_) => ErrorCode::EncodingError,
+        }
+    }
+}
+
+impl From<aws_nitro_enclaves_nsm_api::driver::Error> for ErrorCode {
+    fn from(err: aws_nitro_enclaves_nsm_api::driver::Error) -> Self {
+        use aws_nitro_enclaves_nsm_api::driver::Error;
+        match err {
+            Error::Io(err) if err.raw_os_error() == Some(libc::EMSGSIZE) => {
+                ErrorCode::InputTooLarge
+            }
+            Error::Io(_) => ErrorCode::System,
+            Error::Cbor(_) => ErrorCode::EncodingError,
         }
     }
 }
 
 impl From<ApiErrorCode> for ErrorCode {
     fn from(api_err_code: ApiErrorCode) -> Self {
-       match api_err_code {
-          ApiErrorCode::Success =>  ErrorCode::Success,
-          ApiErrorCode::InvalidResponse => ErrorCode::InvalidResponse,
-          ApiErrorCode::InvalidIndex => ErrorCode::InvalidIndex,
-          ApiErrorCode::ReadOnlyIndex => ErrorCode::ReadOnlyIndex,
-          ApiErrorCode::InvalidArgument => ErrorCode::InvalidArgument,
-          ApiErrorCode::InternalError=> ErrorCode::InternalError,
-       } 
+        match api_err_code {
+            ApiErrorCode::Success => ErrorCode::Success,
+            ApiErrorCode::InvalidResponse => ErrorCode::InvalidResponse,
+            ApiErrorCode::InvalidIndex => ErrorCode::InvalidIndex,
+            ApiErrorCode::ReadOnlyIndex => ErrorCode::ReadOnlyIndex,
+            ApiErrorCode::InvalidArgument => ErrorCode::InvalidArgument,
+            ApiErrorCode::InternalError => ErrorCode::InternalError,
+            ApiErrorCode::InvalidOperation => ErrorCode::InvalidOperation,
+        }
     }
 }
-
 
 /// NSM library initialization function.  
 /// *Returns*: A descriptor for the opened device file.
@@ -95,7 +109,7 @@ impl From<ApiErrorCode> for ErrorCode {
 pub extern "C" fn nsm_lib_init() -> i32 {
     match nsm_init() {
         Ok(fd) => fd,
-        Err(_) => ErrorCode::OsError as i32
+        Err(err) => ErrorCode::from(err) as i32,
     }
 }
 
@@ -106,7 +120,7 @@ pub extern "C" fn nsm_lib_init() -> i32 {
 pub extern "C" fn nsm_lib_exit(fd: i32) -> ErrorCode {
     match nsm_exit(fd) {
         Ok(()) => ErrorCode::Success,
-        Err(err) => ErrorCode::OsError,
+        Err(err) => err.into(),
     }
 }
 
@@ -140,7 +154,10 @@ pub unsafe extern "C" fn nsm_extend_pcr(
     };
 
     match nsm_process_request(fd, request) {
-        Ok(Response::ExtendPCR { data: pcr }) => { nsm_get_raw_from_vec(&pcr, pcr_data, pcr_data_len); ErrorCode::Success }
+        Ok(Response::ExtendPCR { data: pcr }) => {
+            nsm_get_raw_from_vec(&pcr, pcr_data, pcr_data_len);
+            ErrorCode::Success
+        }
         Ok(Response::Error(err)) => ErrorCode::from(err),
         Ok(_) => ErrorCode::InvalidResponse,
         Err(err) => ErrorCode::from(err),
@@ -164,17 +181,20 @@ pub unsafe extern "C" fn nsm_describe_pcr(
     data_len: &mut u32,
 ) -> ErrorCode {
     let request = Request::DescribePCR { index };
+    let response = nsm_process_request(fd, request);
 
-    match nsm_process_request(fd, request) {
-        Response::DescribePCR {
+    match response {
+        Ok(Response::DescribePCR {
             lock: pcr_lock,
             data: pcr_data,
-        } => {
+        }) => {
             *lock = pcr_lock;
-            nsm_get_raw_from_vec(&pcr_data, data, data_len)
+            nsm_get_raw_from_vec(&pcr_data, data, data_len);
+            ErrorCode::Success
         }
-        Response::Error(err) => err,
-        _ => ErrorCode::InvalidResponse,
+        Ok(Response::Error(err)) => err.into(),
+        Ok(_) => ErrorCode::InvalidResponse,
+        Err(err) => err.into(),
     }
 }
 
@@ -185,11 +205,13 @@ pub unsafe extern "C" fn nsm_describe_pcr(
 #[no_mangle]
 pub extern "C" fn nsm_lock_pcr(fd: i32, index: u16) -> ErrorCode {
     let request = Request::LockPCR { index };
+    let response = nsm_process_request(fd, request);
 
-    match nsm_process_request(fd, request) {
-        Response::LockPCR => ErrorCode::Success,
-        Response::Error(err) => err,
-        _ => ErrorCode::InvalidResponse,
+    match response {
+        Ok(Response::LockPCR) => ErrorCode::Success,
+        Ok(Response::Error(err)) => err.into(),
+        Ok(_) => ErrorCode::InvalidResponse,
+        Err(err) => err.into(),
     }
 }
 
@@ -200,11 +222,13 @@ pub extern "C" fn nsm_lock_pcr(fd: i32, index: u16) -> ErrorCode {
 #[no_mangle]
 pub extern "C" fn nsm_lock_pcrs(fd: i32, range: u16) -> ErrorCode {
     let request = Request::LockPCRs { range };
+    let response = nsm_process_request(fd, request);
 
-    match nsm_process_request(fd, request) {
-        Response::LockPCRs => ErrorCode::Success,
-        Response::Error(err) => err,
-        _ => ErrorCode::InvalidResponse,
+    match response {
+        Ok(Response::LockPCRs) => ErrorCode::Success,
+        Ok(Response::Error(err)) => err.into(),
+        Ok(_) => ErrorCode::InvalidResponse,
+        Err(err) => err.into(),
     }
 }
 
@@ -215,9 +239,10 @@ pub extern "C" fn nsm_lock_pcrs(fd: i32, range: u16) -> ErrorCode {
 #[no_mangle]
 pub extern "C" fn nsm_get_description(fd: i32, nsm_description: &mut NsmDescription) -> ErrorCode {
     let request = Request::DescribeNSM;
+    let response = nsm_process_request(fd, request);
 
-    match nsm_process_request(fd, request) {
-        Response::DescribeNSM {
+    match response {
+        Ok(Response::DescribeNSM {
             version_major,
             version_minor,
             version_patch,
@@ -225,7 +250,7 @@ pub extern "C" fn nsm_get_description(fd: i32, nsm_description: &mut NsmDescript
             max_pcrs,
             locked_pcrs,
             digest,
-        } => {
+        }) => {
             nsm_description.version_major = version_major;
             nsm_description.version_minor = version_minor;
             nsm_description.version_patch = version_patch;
@@ -256,8 +281,9 @@ pub extern "C" fn nsm_get_description(fd: i32, nsm_description: &mut NsmDescript
 
             ErrorCode::Success
         }
-        Response::Error(err) => err,
-        _ => ErrorCode::InvalidResponse,
+        Ok(Response::Error(err)) => err.into(),
+        Ok(_) => ErrorCode::InvalidResponse,
+        Err(err) => err.into(),
     }
 }
 
@@ -299,13 +325,15 @@ pub unsafe extern "C" fn nsm_get_attestation_doc(
         nonce: get_byte_buf_from_user_data(nonce_data, nonce_len),
         public_key: get_byte_buf_from_user_data(pub_key_data, pub_key_len),
     };
+    let response = nsm_process_request(fd, request);
 
-    match nsm_process_request(fd, request) {
-        Response::Attestation {
+    match response {
+        Ok(Response::Attestation {
             document: attestation_doc,
-        } => nsm_get_raw_from_vec(&attestation_doc, att_doc_data, att_doc_len),
-        Response::Error(err) => err,
-        _ => ErrorCode::InvalidResponse,
+        }) => nsm_get_raw_from_vec(&attestation_doc, att_doc_data, att_doc_len),
+        Ok(Response::Error(err)) => err.into(),
+        Ok(_) => ErrorCode::InvalidResponse,
+        Err(err) => err.into(),
     }
 }
 
@@ -319,14 +347,18 @@ pub unsafe extern "C" fn nsm_get_random(fd: i32, buf: *mut u8, buf_len: &mut usi
     if fd < 0 || buf.is_null() || buf_len == &0 {
         return ErrorCode::InvalidArgument;
     }
-    match nsm_process_request(fd, Request::GetRandom) {
-        Response::GetRandom { random } => {
+    let request = Request::GetRandom;
+    let response = nsm_process_request(fd, request);
+
+    match response {
+        Ok(Response::GetRandom { random }) => {
             *buf_len = std::cmp::min(*buf_len, random.len());
             std::ptr::copy_nonoverlapping(random.as_ptr(), buf, *buf_len);
             ErrorCode::Success
         }
-        Response::Error(err) => err,
-        _ => ErrorCode::InvalidResponse,
+        Ok(Response::Error(err)) => err.into(),
+        Ok(_) => ErrorCode::InvalidResponse,
+        Err(err) => err.into(),
     }
 }
 
